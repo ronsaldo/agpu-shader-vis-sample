@@ -1,0 +1,3 @@
+[submodule "thirdparty/abstract-gpu"]
+	path = thirdparty/abstract-gpu
+	url = https://github.com/desromech/abstract-gpu.git
