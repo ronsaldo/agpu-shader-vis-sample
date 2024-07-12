@@ -6,6 +6,16 @@
 #include <vector>
 #include <string>
 
+struct ScreenAndUIState
+{
+    int screenWidth = 640;
+    int screenHeight = 480;
+    bool flipVertically = false;
+    float screenScale = 10.0f;
+    float screenOffsetX = 0.0f;
+    float screenOffsetY = 0.0f;
+};
+
 class ShaderVis
 {
 public:
@@ -66,7 +76,7 @@ public:
         SDL_SetHint(SDL_HINT_NO_SIGNAL_HANDLERS, "1");
         SDL_Init(SDL_INIT_VIDEO);
 
-        window = SDL_CreateWindow("ShaderVis", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screenWidth, screenHeight, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        window = SDL_CreateWindow("ShaderVis", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, screenAndUIState.screenWidth, screenAndUIState.screenHeight, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
         if(!window)
         {
             fprintf(stderr, "Failed to create window.\n");
@@ -107,8 +117,8 @@ public:
         }
 
         currentSwapChainCreateInfo.colorbuffer_format = AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB;
-        currentSwapChainCreateInfo.width = screenWidth;
-        currentSwapChainCreateInfo.height = screenHeight;
+        currentSwapChainCreateInfo.width = screenAndUIState.screenWidth;
+        currentSwapChainCreateInfo.height = screenAndUIState.screenHeight;
         currentSwapChainCreateInfo.buffer_count = 3;
         currentSwapChainCreateInfo.flags = AGPU_SWAP_CHAIN_FLAG_APPLY_SCALE_FACTOR_FOR_HI_DPI;
         if (vsyncDisabled)
@@ -135,8 +145,8 @@ public:
             return false;
         }
 
-        screenWidth = swapChain->getWidth();
-        screenHeight = swapChain->getHeight();
+        screenAndUIState.screenWidth = swapChain->getWidth();
+        screenAndUIState.screenHeight = swapChain->getHeight();
 
         // Create the render pass
         {
@@ -193,14 +203,25 @@ public:
             samplersBinding->bindSampler(0, sampler);
         }
 
-        // Data binding
+        // Screen and UI State buffer
         {
-            dataBinding = shaderSignature->createShaderResourceBinding(1);
+            agpu_buffer_description desc = {};
+            desc.size = (sizeof(ScreenAndUIState) + 255) & (-256);
+            desc.heap_type = AGPU_MEMORY_HEAP_TYPE_HOST_TO_DEVICE;
+            desc.usage_modes = agpu_buffer_usage_mask(AGPU_COPY_DESTINATION_BUFFER | AGPU_UNIFORM_BUFFER);
+            desc.main_usage_mode = AGPU_UNIFORM_BUFFER;
+	        desc.mapping_flags = AGPU_MAP_DYNAMIC_STORAGE_BIT;
+            screenAndUIStateUniformBuffer = device->createBuffer(&desc, nullptr);
         }
+
+        // Data binding
+        dataBinding = shaderSignature->createShaderResourceBinding(1);
+        dataBinding->bindUniformBuffer(0, screenAndUIStateUniformBuffer);
 
         // Screen quad pipeline state.
         screenQuadVertex = compileShaderWithSourceFile("assets/shaders/screenQuad.glsl", AGPU_VERTEX_SHADER);
         screenQuadFragment = compileShaderWithSourceFile("assets/shaders/voronoiNoise.glsl", AGPU_FRAGMENT_SHADER);
+        screenAndUIState.flipVertically = device->hasTopLeftNdcOrigin() == device->hasBottomLeftTextureCoordinates();
 
         if(!screenQuadVertex || !screenQuadFragment)
             return 1;
@@ -322,6 +343,12 @@ public:
         case SDL_KEYDOWN:
             onKeyDown(event.key);
             break;
+        case SDL_MOUSEMOTION:
+            onMouseMotion(event.motion);
+            break;
+        case SDL_MOUSEWHEEL:
+            onMouseWheel(event.wheel);
+            break;
         case SDL_WINDOWEVENT:
             {
                 switch(event.window.event)
@@ -352,8 +379,8 @@ public:
         newSwapChainCreateInfo.old_swap_chain = swapChain.get();
         swapChain = device->createSwapChain(commandQueue, &newSwapChainCreateInfo);
 
-        screenWidth = swapChain->getWidth();
-        screenHeight = swapChain->getHeight();
+        screenAndUIState.screenWidth = swapChain->getWidth();
+        screenAndUIState.screenHeight = swapChain->getHeight();
         if(swapChain)
             currentSwapChainCreateInfo = newSwapChainCreateInfo;
     }
@@ -370,8 +397,29 @@ public:
         }
     }
 
+    void onMouseMotion(const SDL_MouseMotionEvent &event)
+    {
+        if(event.state & SDL_BUTTON_LMASK)
+        {
+            float scaleFactor = screenAndUIState.screenScale *0.001f;
+            screenAndUIState.screenOffsetX += event.xrel*scaleFactor;
+            screenAndUIState.screenOffsetY -= event.yrel*scaleFactor;
+        }
+    }
+
+    void onMouseWheel(const SDL_MouseWheelEvent &event)
+    {
+        if(event.y > 0)
+            screenAndUIState.screenScale /= 1.1;
+        else if(event.y < 0)
+            screenAndUIState.screenScale *= 1.1;
+    }
+
     void updateAndRender(float delta)
     {
+        // Upload the data buffers.
+        screenAndUIStateUniformBuffer->uploadBufferData(0, sizeof(screenAndUIState), &screenAndUIState);
+
         // Build the command list
         commandAllocator->reset();
         commandList->reset(commandAllocator, nullptr);
@@ -381,8 +429,8 @@ public:
         commandList->setShaderSignature(shaderSignature);
         commandList->beginRenderPass(mainRenderPass, backBuffer, false);
 
-        commandList->setViewport(0, 0, screenWidth, screenHeight);
-        commandList->setScissor(0, 0, screenWidth, screenHeight);
+        commandList->setViewport(0, 0, screenAndUIState.screenWidth, screenAndUIState.screenHeight);
+        commandList->setScissor(0, 0, screenAndUIState.screenWidth, screenAndUIState.screenHeight);
 
         // Draw the screen quad.
         commandList->usePipelineState(screenQuadPipeline);
@@ -414,8 +462,6 @@ public:
     }
 
     SDL_Window *window = nullptr;
-    int screenWidth = 640;
-    int screenHeight = 480;
     bool isQuitting = false;
 
     agpu_device_ref device;
@@ -438,6 +484,8 @@ public:
     agpu_buffer_ref uiDataBuffer;
     agpu_texture_ref bitmapFont;
     agpu_shader_resource_binding_ref dataBinding;
+
+    ScreenAndUIState screenAndUIState;
 };
 
 int main(int argc, const char *argv[])
