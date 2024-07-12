@@ -2,6 +2,7 @@
 #include "SDL_syswm.h"
 #include "AGPU/agpu.hpp"
 #include <stdio.h>
+#include <memory>
 #include <vector>
 #include <string>
 
@@ -156,6 +157,64 @@ public:
             mainRenderPass = device->createRenderPass(&description);
         }
 
+        // Create the shader signature
+        {
+
+            auto builder = device->createShaderSignatureBuilder();
+            // Sampler
+            builder->beginBindingBank(1);
+            builder->addBindingBankElement(AGPU_SHADER_BINDING_TYPE_SAMPLER, 1);
+
+            builder->beginBindingBank(1);
+            builder->addBindingBankElement(AGPU_SHADER_BINDING_TYPE_UNIFORM_BUFFER, 1); // Screen and UI state
+            builder->addBindingBankElement(AGPU_SHADER_BINDING_TYPE_STORAGE_BUFFER, 1); // UI Data
+            builder->addBindingBankElement(AGPU_SHADER_BINDING_TYPE_SAMPLED_IMAGE, 1); // Bitmap font
+
+            shaderSignature = builder->build();
+            if(!shaderSignature)
+                return 1;
+        }
+
+        // Samplers binding
+        {
+            agpu_sampler_description samplerDesc = {};
+            samplerDesc.address_u = AGPU_TEXTURE_ADDRESS_MODE_CLAMP;
+            samplerDesc.address_v = AGPU_TEXTURE_ADDRESS_MODE_CLAMP;
+            samplerDesc.address_w = AGPU_TEXTURE_ADDRESS_MODE_CLAMP;
+            samplerDesc.filter = AGPU_FILTER_MIN_LINEAR_MAG_LINEAR_MIPMAP_NEAREST;
+            sampler = device->createSampler(&samplerDesc);
+            if(!sampler)
+            {
+                fprintf(stderr, "Failed to create the sampler.\n");
+                return 1;
+            }
+
+            samplersBinding = shaderSignature->createShaderResourceBinding(0);
+            samplersBinding->bindSampler(0, sampler);
+        }
+
+        // Data binding
+        {
+            dataBinding = shaderSignature->createShaderResourceBinding(1);
+        }
+
+        // Screen quad pipeline state.
+        screenQuadVertex = compileShaderWithSourceFile("assets/shaders/screenQuad.glsl", AGPU_VERTEX_SHADER);
+        screenQuadFragment = compileShaderWithSourceFile("assets/shaders/voronoiNoise.glsl", AGPU_FRAGMENT_SHADER);
+
+        if(!screenQuadVertex || !screenQuadFragment)
+            return 1;
+
+        {
+            auto builder = device->createPipelineBuilder();
+            builder->setRenderTargetFormat(0, AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB);
+            builder->setShaderSignature(shaderSignature);
+            builder->attachShader(screenQuadVertex);
+            builder->attachShader(screenQuadFragment);
+            builder->setPrimitiveType(AGPU_TRIANGLES);
+            screenQuadPipeline = finishBuildingPipeline(builder);
+        }
+
         // Create the command allocator and command list
         commandAllocator = device->createCommandAllocator(AGPU_COMMAND_LIST_TYPE_DIRECT, commandQueue);
         commandList = device->createCommandList(AGPU_COMMAND_LIST_TYPE_DIRECT, commandAllocator, nullptr);
@@ -180,6 +239,70 @@ public:
         SDL_DestroyWindow(window);
         SDL_Quit();
         return 0;
+    }
+
+    std::string readWholeFile(const std::string &fileName)
+    {
+        FILE *file = fopen(fileName.c_str(), "rb");
+        if(!file)
+        {
+            fprintf(stderr, "Failed to open file %s\n", fileName.c_str());
+            return std::string();
+        }
+
+        // Allocate the data.
+        std::vector<char> data;
+        fseek(file, 0, SEEK_END);
+        data.resize(ftell(file));
+        fseek(file, 0, SEEK_SET);
+
+        // Read the file
+        if(fread(&data[0], data.size(), 1, file) != 1)
+        {
+            fprintf(stderr, "Failed to read file %s\n", fileName.c_str());
+            fclose(file);
+            return std::string();
+        }
+
+        fclose(file);
+        return std::string(data.begin(), data.end());
+    }
+
+    agpu_shader_ref compileShaderWithSourceFile(const std::string &sourceFileName, agpu_shader_type type)
+    {
+        return compileShaderWithSource(sourceFileName, readWholeFile(sourceFileName), type);
+    }
+
+    agpu_shader_ref compileShaderWithSource(const std::string &name, const std::string &source, agpu_shader_type type)
+    {
+        if(source.empty())
+            return nullptr;
+
+        // Create the shader compiler.
+        agpu_offline_shader_compiler_ref shaderCompiler = device->createOfflineShaderCompiler();
+        shaderCompiler->setShaderSource(AGPU_SHADER_LANGUAGE_VGLSL, type, source.c_str(), (agpu_string_length)source.size());
+        auto errorCode = agpuCompileOfflineShader(shaderCompiler.get(), AGPU_SHADER_LANGUAGE_DEVICE_SHADER, nullptr);
+        if(errorCode)
+        {
+            auto logLength = shaderCompiler->getCompilationLogLength();
+            std::unique_ptr<char[]> logBuffer(new char[logLength+1]);
+            shaderCompiler->getCompilationLog(logLength+1, logBuffer.get());
+            fprintf(stderr, "Compilation error of '%s':%s\n", name.c_str(), logBuffer.get());
+            return nullptr;
+        }
+
+        // Create the shader and compile it.
+        return shaderCompiler->getResultAsShader();
+    }
+
+    agpu_pipeline_state_ref finishBuildingPipeline(const agpu_pipeline_builder_ref &builder)
+    {
+        auto pipeline = builder->build();
+        if(!pipeline)
+        {
+            fprintf(stderr, "Failed to build pipeline.\n");
+        }
+        return pipeline;
     }
 
     void processEvents()
@@ -255,10 +378,19 @@ public:
 
         auto backBuffer = swapChain->getCurrentBackBuffer();
 
+        commandList->setShaderSignature(shaderSignature);
         commandList->beginRenderPass(mainRenderPass, backBuffer, false);
 
         commandList->setViewport(0, 0, screenWidth, screenHeight);
         commandList->setScissor(0, 0, screenWidth, screenHeight);
+
+        // Draw the screen quad.
+        commandList->usePipelineState(screenQuadPipeline);
+        commandList->useShaderResources(samplersBinding);
+        commandList->useShaderResources(dataBinding);
+
+        // Draw the objects
+        commandList->drawArrays(3, 1, 0, 0);
 
         // Finish the command list
         commandList->endRenderPass();
@@ -294,6 +426,18 @@ public:
     agpu_command_list_ref commandList;
     agpu_swap_chain_create_info currentSwapChainCreateInfo;
     agpu_swap_chain_ref swapChain;
+
+    agpu_shader_ref screenQuadVertex;
+    agpu_shader_ref screenQuadFragment;
+    agpu_pipeline_state_ref screenQuadPipeline;
+
+    agpu_sampler_ref sampler;
+    agpu_shader_resource_binding_ref samplersBinding;
+
+    agpu_buffer_ref screenAndUIStateUniformBuffer;
+    agpu_buffer_ref uiDataBuffer;
+    agpu_texture_ref bitmapFont;
+    agpu_shader_resource_binding_ref dataBinding;
 };
 
 int main(int argc, const char *argv[])

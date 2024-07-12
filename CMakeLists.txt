@@ -40,3 +40,26 @@ add_subdirectory(thirdparty)
 
 add_subdirectory(apps)
 
+# Data files to distribute.
+set(DATA_OUTPUT_PREFIX "${MainOutputDirectory}")
+if(CMAKE_CONFIGURATION_TYPES)
+    set(DATA_OUTPUT_PREFIX "${MainOutputDirectory}/$<CONFIG>")
+endif()
+
+file(GLOB ASSET_FILES RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
+    "assets/shaders/*.glsl"
+    "assets/textures/*.bmp"
+)
+
+add_custom_target(SampleData ALL)
+foreach(asset_file ${ASSET_FILES})
+    add_custom_command(
+        TARGET SampleData
+        POST_BUILD
+        COMMAND cmake -E copy
+            "${CMAKE_CURRENT_SOURCE_DIR}/${asset_file}"
+            "${DATA_OUTPUT_PREFIX}/${asset_file}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${asset_file}"
+        COMMENT "Copy ${asset_file}"
+    )
+endforeach()
