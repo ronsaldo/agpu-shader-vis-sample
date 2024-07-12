@@ -116,7 +116,7 @@ public:
             return -1;
         }
 
-        currentSwapChainCreateInfo.colorbuffer_format = AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB;
+        currentSwapChainCreateInfo.colorbuffer_format = colorBufferFormat;
         currentSwapChainCreateInfo.width = screenAndUIState.screenWidth;
         currentSwapChainCreateInfo.height = screenAndUIState.screenHeight;
         currentSwapChainCreateInfo.buffer_count = 3;
@@ -151,7 +151,7 @@ public:
         // Create the render pass
         {
             agpu_renderpass_color_attachment_description colorAttachment = {};
-            colorAttachment.format = AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB;
+            colorAttachment.format = colorBufferFormat;
             colorAttachment.begin_action = AGPU_ATTACHMENT_CLEAR;
             colorAttachment.end_action = AGPU_ATTACHMENT_KEEP;
             colorAttachment.clear_value.r = 0;
@@ -228,7 +228,7 @@ public:
 
         {
             auto builder = device->createPipelineBuilder();
-            builder->setRenderTargetFormat(0, AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB);
+            builder->setRenderTargetFormat(0, colorBufferFormat);
             builder->setShaderSignature(shaderSignature);
             builder->attachShader(screenQuadVertex);
             builder->attachShader(screenQuadFragment);
@@ -463,6 +463,8 @@ public:
 
     SDL_Window *window = nullptr;
     bool isQuitting = false;
+
+    agpu_texture_format colorBufferFormat = AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM;
 
     agpu_device_ref device;
     agpu_command_queue_ref commandQueue;
