@@ -68,7 +68,7 @@ vec4 voronoiNoiseComponents(vec2 v)
 
 void main()
 {
-    float screenAspect = 1.0; //float(ScreenAndUIState.screenSize.y) / float(ScreenAndUIState.screenSize.x);
+    float screenAspect = float(ScreenAndUIState.screenSize.y) / float(ScreenAndUIState.screenSize.x);
     vec2 viewPosition = (screenCoord - 0.5)*ScreenAndUIState.screenScale*vec2(1.0, screenAspect) - ScreenAndUIState.screenOffset;
 
     vec4 noiseComponents = voronoiNoiseComponents(viewPosition);

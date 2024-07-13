@@ -1,6 +1,7 @@
 #include "SDL.h"
 #include "SDL_syswm.h"
 #include "AGPU/agpu.hpp"
+#include <stdint.h>
 #include <stdio.h>
 #include <memory>
 #include <vector>
@@ -8,12 +9,26 @@
 
 struct ScreenAndUIState
 {
-    int screenWidth = 640;
-    int screenHeight = 480;
-    bool flipVertically = false;
+    uint32_t screenWidth = 640;
+    uint32_t screenHeight = 480;
+    uint32_t flipVertically = false;
     float screenScale = 10.0f;
     float screenOffsetX = 0.0f;
     float screenOffsetY = 0.0f;
+};
+
+struct UIElementQuad
+{
+    float x, y;
+    float width, height;
+
+    float r, g, b, a;
+
+    uint32_t isGlyph;
+    uint32_t reserved[3];
+
+    float fontX, fontY;
+    float fontWidth, fontHeight;
 };
 
 class ShaderVis
@@ -214,9 +229,35 @@ public:
             screenAndUIStateUniformBuffer = device->createBuffer(&desc, nullptr);
         }
 
+        {
+            uiElementQuadBuffer.reserve(UIElementQuadBufferMaxCapacity);
+            agpu_buffer_description desc = {};
+            desc.size = (sizeof(UIElementQuad)*UIElementQuadBufferMaxCapacity + 255) & (-256);
+            desc.heap_type = AGPU_MEMORY_HEAP_TYPE_HOST_TO_DEVICE;
+            desc.usage_modes = agpu_buffer_usage_mask(AGPU_COPY_DESTINATION_BUFFER | AGPU_STORAGE_BUFFER);
+            desc.main_usage_mode = AGPU_UNIFORM_BUFFER;
+	        desc.mapping_flags = AGPU_MAP_DYNAMIC_STORAGE_BIT;
+            uiDataBuffer = device->createBuffer(&desc, nullptr);
+        }
+
+        bitmapFont = loadTexture("assets/textures/pixel_font_basic_latin_ascii.bmp", false);
+        if(!bitmapFont)
+        {
+            fprintf(stderr, "Failed to load the bitmap font.");
+            return 1;
+        }
+        {
+            agpu_texture_description desc;
+            bitmapFont->getDescription(&desc);
+            bitmapFontInverseWidth = 1.0 / desc.width;
+            bitmapFontInverseHeight = 1.0 / desc.height;
+        }
+
         // Data binding
         dataBinding = shaderSignature->createShaderResourceBinding(1);
         dataBinding->bindUniformBuffer(0, screenAndUIStateUniformBuffer);
+        dataBinding->bindStorageBuffer(1, uiDataBuffer);
+        dataBinding->bindSampledTextureView(2, bitmapFont->getOrCreateFullView());
 
         // Screen quad pipeline state.
         screenQuadVertex = compileShaderWithSourceFile("assets/shaders/screenQuad.glsl", AGPU_VERTEX_SHADER);
@@ -234,6 +275,28 @@ public:
             builder->attachShader(screenQuadFragment);
             builder->setPrimitiveType(AGPU_TRIANGLES);
             screenQuadPipeline = finishBuildingPipeline(builder);
+        }
+
+        // UI pipeline state.
+        uiElementVertex = compileShaderWithSourceFile("assets/shaders/uiElementVertex.glsl", AGPU_VERTEX_SHADER);
+        uiElementFragment = compileShaderWithSourceFile("assets/shaders/uiElementFragment.glsl", AGPU_FRAGMENT_SHADER);
+
+        if(!screenQuadVertex || !screenQuadFragment)
+            return 1;
+
+        {
+            auto builder = device->createPipelineBuilder();
+            builder->setRenderTargetFormat(0, colorBufferFormat);
+            builder->setShaderSignature(shaderSignature);
+            builder->attachShader(uiElementVertex);
+            builder->attachShader(uiElementFragment);
+            builder->setBlendFunction(-1,
+                AGPU_BLENDING_ONE, AGPU_BLENDING_INVERTED_SRC_ALPHA, AGPU_BLENDING_OPERATION_ADD,
+                AGPU_BLENDING_ONE, AGPU_BLENDING_INVERTED_SRC_ALPHA, AGPU_BLENDING_OPERATION_ADD
+            );
+            builder->setBlendState(-1, true);
+            builder->setPrimitiveType(AGPU_TRIANGLE_STRIP);
+            uiPipeline = finishBuildingPipeline(builder);
         }
 
         // Create the command allocator and command list
@@ -328,6 +391,17 @@ public:
 
     void processEvents()
     {
+        // Reset the event data.
+        hasWheelEvent = false;
+        hasHandledWheelEvent = false;
+        wheelDelta = 0;
+
+        hasLeftDragEvent = false;
+        hasHandledLeftDragEvent = false;
+        leftDragDeltaX = 0;
+        leftDragDeltaY = 0;
+
+        // Poll and process the SDL events.
         SDL_Event event;
         while(SDL_PollEvent(&event))
             processEvent(event);
@@ -401,24 +475,84 @@ public:
     {
         if(event.state & SDL_BUTTON_LMASK)
         {
-            float scaleFactor = screenAndUIState.screenScale *0.001f;
-            screenAndUIState.screenOffsetX += event.xrel*scaleFactor;
-            screenAndUIState.screenOffsetY -= event.yrel*scaleFactor;
+            hasLeftDragEvent = true;
+            leftDragDeltaX = event.xrel;
+            leftDragDeltaY = event.yrel;
         }
     }
 
     void onMouseWheel(const SDL_MouseWheelEvent &event)
     {
-        if(event.y > 0)
-            screenAndUIState.screenScale /= 1.1;
-        else if(event.y < 0)
-            screenAndUIState.screenScale *= 1.1;
+        hasWheelEvent = true;
+        wheelDelta = event.y;
+    }
+
+    float drawGlyph(char c, float x, float y, float r, float g, float b, float a)
+    {
+        if(c < ' ')
+            return bitmapFontGlyphWidth*bitmapFontScale;
+
+        UIElementQuad quad = {};
+        quad.x = x;
+        quad.y = y;
+        quad.width = bitmapFontGlyphWidth*bitmapFontScale;
+        quad.height = bitmapFontGlyphHeight*bitmapFontScale;
+        
+        quad.r = r;
+        quad.g = g;
+        quad.b = b;
+        quad.a = a;
+
+        if (' ' <= c && c <= 127)
+        {
+            int index = c - ' ';
+            int column = index % bitmapFontColumns;
+            int row = index / bitmapFontColumns;
+            quad.isGlyph = true;
+            quad.fontX = column * bitmapFontGlyphWidth * bitmapFontInverseWidth;
+            quad.fontY = row * bitmapFontGlyphHeight * bitmapFontInverseHeight;
+            quad.fontWidth = bitmapFontGlyphWidth * bitmapFontInverseWidth;
+            quad.fontHeight = bitmapFontGlyphHeight * bitmapFontInverseHeight;
+        }
+
+        uiElementQuadBuffer.push_back(quad);
+        return bitmapFontGlyphWidth*bitmapFontScale;
+    }
+
+    float drawString(const std::string &string, float x, float y, float r, float g, float b, float a)
+    {
+        auto sx = x;
+        for(auto c : string)
+            x += drawGlyph(c, x, y, r, g, b, a);
+        return x - sx;
     }
 
     void updateAndRender(float delta)
     {
+        uiElementQuadBuffer.clear();
+
+        drawString("Test", 5, 5, 1, 0, 0, 1);
+
+        // Left drag.
+        if(hasLeftDragEvent && !hasHandledLeftDragEvent)
+        {
+            float scaleFactor = screenAndUIState.screenScale;
+            screenAndUIState.screenOffsetX += leftDragDeltaX/float(screenAndUIState.screenWidth)*scaleFactor;
+            screenAndUIState.screenOffsetY -= leftDragDeltaY/float(screenAndUIState.screenHeight)*scaleFactor;
+        }
+
+        // Mouse wheel.
+        if(hasWheelEvent && !hasHandledWheelEvent)
+        {
+            if(wheelDelta > 0)
+                screenAndUIState.screenScale /= 1.1;
+            else if(wheelDelta < 0)
+                screenAndUIState.screenScale *= 1.1;
+        }
+
         // Upload the data buffers.
         screenAndUIStateUniformBuffer->uploadBufferData(0, sizeof(screenAndUIState), &screenAndUIState);
+        uiDataBuffer->uploadBufferData(0, uiElementQuadBuffer.size() * sizeof(UIElementQuad), uiElementQuadBuffer.data());
 
         // Build the command list
         commandAllocator->reset();
@@ -439,6 +573,10 @@ public:
 
         // Draw the objects
         commandList->drawArrays(3, 1, 0, 0);
+
+        // UI element pipeline
+        commandList->usePipelineState(uiPipeline);
+        commandList->drawArrays(4, uiElementQuadBuffer.size(), 0, 0);
 
         // Finish the command list
         commandList->endRenderPass();
@@ -461,6 +599,44 @@ public:
             recreateSwapChain();
     }
 
+    agpu_texture_ref loadTexture(const char *fileName, bool nonColorData)
+    {
+        auto surface = SDL_LoadBMP(fileName);
+        if (!surface)
+            return nullptr;
+
+        auto convertedSurface = SDL_ConvertSurfaceFormat(surface, SDL_PIXELFORMAT_ARGB8888, 0);
+        SDL_FreeSurface(surface);
+        if (!convertedSurface)
+            return nullptr;
+
+        auto format = nonColorData ? AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM : AGPU_TEXTURE_FORMAT_B8G8R8A8_UNORM_SRGB;
+        agpu_texture_description desc = {};
+        desc.type = AGPU_TEXTURE_2D;
+        desc.format = format;
+        desc.width = convertedSurface->w;
+        desc.height = convertedSurface->h;
+        desc.depth = 1;
+        desc.layers = 1;
+        desc.miplevels = 1;
+        desc.sample_count = 1;
+        desc.sample_quality = 0;
+        desc.heap_type = AGPU_MEMORY_HEAP_TYPE_DEVICE_LOCAL;
+        desc.usage_modes = agpu_texture_usage_mode_mask(AGPU_TEXTURE_USAGE_SAMPLED | AGPU_TEXTURE_USAGE_COPY_DESTINATION);
+        desc.main_usage_mode = AGPU_TEXTURE_USAGE_SAMPLED;
+
+        agpu_texture_ref texture = device->createTexture(&desc);
+        if (!texture)
+        {
+            SDL_FreeSurface(convertedSurface);
+            return nullptr;
+        }
+
+        texture->uploadTextureData(0, 0, convertedSurface->pitch, convertedSurface->pitch*convertedSurface->h, convertedSurface->pixels);
+        SDL_FreeSurface(convertedSurface);
+        return texture;
+    }
+
     SDL_Window *window = nullptr;
     bool isQuitting = false;
 
@@ -479,15 +655,38 @@ public:
     agpu_shader_ref screenQuadFragment;
     agpu_pipeline_state_ref screenQuadPipeline;
 
+    agpu_shader_ref uiElementVertex;
+    agpu_shader_ref uiElementFragment;
+    agpu_pipeline_state_ref uiPipeline;
+
     agpu_sampler_ref sampler;
     agpu_shader_resource_binding_ref samplersBinding;
 
     agpu_buffer_ref screenAndUIStateUniformBuffer;
     agpu_buffer_ref uiDataBuffer;
-    agpu_texture_ref bitmapFont;
     agpu_shader_resource_binding_ref dataBinding;
 
+    agpu_texture_ref bitmapFont;
+    float bitmapFontScale = 1.5;
+    float bitmapFontInverseWidth = 0;
+    float bitmapFontInverseHeight = 0;
+    int bitmapFontGlyphWidth = 7;
+    int bitmapFontGlyphHeight = 9;
+    int bitmapFontColumns = 16;
+
     ScreenAndUIState screenAndUIState;
+
+    size_t UIElementQuadBufferMaxCapacity = 4192;
+    std::vector<UIElementQuad> uiElementQuadBuffer;
+
+    bool hasWheelEvent = false;
+    bool hasHandledWheelEvent = false;
+    int wheelDelta = 0;
+
+    bool hasLeftDragEvent = false;
+    bool hasHandledLeftDragEvent = false;
+    int leftDragDeltaX = 0;
+    int leftDragDeltaY = 0;
 };
 
 int main(int argc, const char *argv[])
