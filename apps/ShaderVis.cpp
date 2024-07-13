@@ -185,8 +185,8 @@ public:
             return false;
         }
 
-        screenAndUIState.screenWidth = swapChain->getWidth();
-        screenAndUIState.screenHeight = swapChain->getHeight();
+        displayWidth = swapChain->getWidth();
+        displayHeight = swapChain->getHeight();
 
         // Create the render pass
         {
@@ -472,6 +472,8 @@ public:
     {
         int w, h;
         SDL_GetWindowSize(window, &w, &h);
+        screenAndUIState.screenWidth = w;
+        screenAndUIState.screenHeight = h;
 
         device->finishExecution();
         auto newSwapChainCreateInfo = currentSwapChainCreateInfo;
@@ -480,8 +482,8 @@ public:
         newSwapChainCreateInfo.old_swap_chain = swapChain.get();
         swapChain = device->createSwapChain(commandQueue, &newSwapChainCreateInfo);
 
-        screenAndUIState.screenWidth = swapChain->getWidth();
-        screenAndUIState.screenHeight = swapChain->getHeight();
+        displayWidth = swapChain->getWidth();
+        displayWidth = swapChain->getHeight();
         if(swapChain)
             currentSwapChainCreateInfo = newSwapChainCreateInfo;
     }
@@ -680,8 +682,8 @@ public:
         commandList->setShaderSignature(shaderSignature);
         commandList->beginRenderPass(mainRenderPass, backBuffer, false);
 
-        commandList->setViewport(0, 0, screenAndUIState.screenWidth, screenAndUIState.screenHeight);
-        commandList->setScissor(0, 0, screenAndUIState.screenWidth, screenAndUIState.screenHeight);
+        commandList->setViewport(0, 0, displayWidth, displayHeight);
+        commandList->setScissor(0, 0, displayWidth, displayHeight);
 
         // Draw the screen quad.
         commandList->usePipelineState(screenQuadPipeline);
@@ -806,6 +808,8 @@ public:
     int leftDragStartY = 0;
     int leftDragDeltaX = 0;
     int leftDragDeltaY = 0;
+    int displayWidth = 640;
+    int displayHeight = 480;
 };
 
 int main(int argc, const char *argv[])
