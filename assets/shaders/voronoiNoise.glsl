@@ -3,10 +3,25 @@
 layout(std140, set = 1, binding = 0) uniform ScreenAndUIStateBlock
 {
     uvec2 screenSize;
+
     bool flipVertically;
     float screenScale;
+
     vec2 screenOffset;
+
+    float startThreshold;
+    float endThreshold;
+
+    float amplitude;
+    float octaves;
+    float lacunarity;
+    float reserved;
+
+    vec4 voronoiFactors;
+    vec4 startColor;
+    vec4 endColor;
 } ScreenAndUIState;
+
 
 layout(location=0) in vec2 screenCoord;
 
@@ -71,6 +86,28 @@ void main()
     float screenAspect = float(ScreenAndUIState.screenSize.y) / float(ScreenAndUIState.screenSize.x);
     vec2 viewPosition = (screenCoord - 0.5)*ScreenAndUIState.screenScale*vec2(1.0, screenAspect) - ScreenAndUIState.screenOffset;
 
-    vec4 noiseComponents = voronoiNoiseComponents(viewPosition);
-    fragColor = vec4(noiseComponents.xxx, 1.0);
+    vec2 noiseCoordinate = viewPosition;
+    float noiseGain = 1.0;
+    float totalGain = 0.0;
+
+    vec4 noiseComponents = vec4(0.0);
+    int octaves = int(ScreenAndUIState.octaves);
+    for(int i = 0; i < octaves; ++i)
+    {
+        noiseComponents += voronoiNoiseComponents(noiseCoordinate)*noiseGain;
+        totalGain += noiseGain;
+
+        noiseCoordinate *= ScreenAndUIState.lacunarity;
+        noiseGain /= ScreenAndUIState.lacunarity;
+    }
+
+    noiseComponents *= ScreenAndUIState.amplitude / totalGain;
+
+    float noiseValue = dot(noiseComponents, ScreenAndUIState.voronoiFactors);
+    if (ScreenAndUIState.startThreshold <= ScreenAndUIState.endThreshold)
+        noiseValue = clamp((noiseValue - ScreenAndUIState.startThreshold) / (ScreenAndUIState.endThreshold - ScreenAndUIState.startThreshold), 0.0, 1.0);
+    else
+        noiseValue = clamp((noiseValue - ScreenAndUIState.endThreshold) / (ScreenAndUIState.startThreshold - ScreenAndUIState.endThreshold), 0.0, 1.0);
+
+    fragColor = mix(ScreenAndUIState.startColor, ScreenAndUIState.endColor, noiseValue);
 }

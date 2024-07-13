@@ -11,10 +11,35 @@ struct ScreenAndUIState
 {
     uint32_t screenWidth = 640;
     uint32_t screenHeight = 480;
+
     uint32_t flipVertically = false;
     float screenScale = 10.0f;
+
     float screenOffsetX = 0.0f;
     float screenOffsetY = 0.0f;
+
+    float startThreshold = 0.0;
+    float endThreshold = 1.0;
+
+    float amplitude = 1.0;
+    float octaves = 1.0;
+    float lacunarity = 1.478;
+    float reserved;
+
+    float voronoiF1 = 1;
+    float voronoiF2 = 0;
+    float voronoiF3 = 0;
+    float voronoiF4 = 0;
+
+    float startColorRed = 0;
+    float startColorGreen = 0;
+    float startColorBlue = 0;
+    float startColorAlpha = 1;
+
+    float endColorRed = 1;
+    float endColorGreen = 1;
+    float endColorBlue = 1;
+    float endColorAlpha = 1;
 };
 
 struct UIElementQuad
@@ -398,6 +423,8 @@ public:
 
         hasLeftDragEvent = false;
         hasHandledLeftDragEvent = false;
+        leftDragStartX = 0;
+        leftDragStartY = 0;
         leftDragDeltaX = 0;
         leftDragDeltaY = 0;
 
@@ -476,6 +503,8 @@ public:
         if(event.state & SDL_BUTTON_LMASK)
         {
             hasLeftDragEvent = true;
+            leftDragStartX = event.x;
+            leftDragStartY = event.y;
             leftDragDeltaX = event.xrel;
             leftDragDeltaY = event.yrel;
         }
@@ -485,6 +514,22 @@ public:
     {
         hasWheelEvent = true;
         wheelDelta = event.y;
+    }
+
+    void drawRectangle(float x, float y, float w, float h, float r, float g, float b, float a)
+    {
+        UIElementQuad quad = {};
+        quad.x = x;
+        quad.y = y;
+        quad.width = w;
+        quad.height = h;
+        
+        quad.r = r;
+        quad.g = g;
+        quad.b = b;
+        quad.a = a;
+
+        uiElementQuadBuffer.push_back(quad);
     }
 
     float drawGlyph(char c, float x, float y, float r, float g, float b, float a)
@@ -527,11 +572,83 @@ public:
         return x - sx;
     }
 
+    float currentLayoutRowX = 0;
+    float currentLayoutRowY = 0;
+    float currentLayoutX = 0;
+    float currentLayoutY = 0;
+    
+    void beginLayout(float x = 5, float y = 5)
+    {
+        currentLayoutX = currentLayoutRowX = x;
+        currentLayoutY = currentLayoutRowY = y;
+    }
+
+    void advanceLayoutRow()
+    {
+        currentLayoutRowY += bitmapFontGlyphHeight * bitmapFontScale + 5;
+        currentLayoutX = currentLayoutRowX;
+        currentLayoutY = currentLayoutRowY;
+    }
+
+    void sliderForFloat(const std::string &label, float minValue, float maxValue, float &value)
+    {
+        currentLayoutX += drawString(label, currentLayoutX, currentLayoutY, 1.0, 1.0, 1.0, 0.6);
+
+        float sliderHeight = bitmapFontGlyphHeight * bitmapFontScale;
+        float sliderWidth = 80;
+
+        float alpha = (std::min(std::max(value, minValue), maxValue) - minValue) / (maxValue - minValue);
+
+        drawRectangle(currentLayoutX, currentLayoutY, sliderWidth, sliderHeight, 1.0, 1.0, 1.0, 0.6);
+
+        if(hasLeftDragEvent && !hasHandledLeftDragEvent &&
+            currentLayoutY <= leftDragStartY && leftDragStartY <= currentLayoutY + sliderHeight &&
+            currentLayoutX <= leftDragStartX && leftDragStartX <= currentLayoutX + sliderWidth)
+        {
+            if(leftDragDeltaX != 0)
+            {
+                float deltaAlpha = leftDragDeltaX / sliderWidth;
+                alpha = std::min(std::max(alpha + deltaAlpha, 0.0f), 1.0f);
+                value = minValue + (maxValue - minValue)*alpha;
+            }
+
+            hasHandledLeftDragEvent = true;
+        }
+
+        float sliderBarWidth = 4;
+        drawRectangle(currentLayoutX + (sliderWidth - sliderBarWidth)*alpha, currentLayoutY, sliderBarWidth, sliderHeight, 0.0, 1.0, 0.0, 1.0);
+
+        currentLayoutX += sliderWidth;
+        currentLayoutX += 5;
+    }
+
     void updateAndRender(float delta)
     {
         uiElementQuadBuffer.clear();
 
-        drawString("Test", 5, 5, 1, 0, 0, 1);
+        // Immediate UI
+        beginLayout(5, 5);
+        sliderForFloat("F1", -1, 1, screenAndUIState.voronoiF1);
+        sliderForFloat("F2", -1, 1, screenAndUIState.voronoiF2);
+        sliderForFloat("F3", -1, 1, screenAndUIState.voronoiF3);
+        sliderForFloat("F4", -1, 1, screenAndUIState.voronoiF4);
+
+        advanceLayoutRow();
+        sliderForFloat("Amplitude", 0, 2, screenAndUIState.amplitude);
+        sliderForFloat("Lacunarity", 0, 5, screenAndUIState.lacunarity);
+        sliderForFloat("Octaves", 1, 8, screenAndUIState.octaves);
+
+        advanceLayoutRow();
+        sliderForFloat("S", -1, 1, screenAndUIState.startThreshold);
+        sliderForFloat("R", 0, 1, screenAndUIState.startColorRed);
+        sliderForFloat("G", 0, 1, screenAndUIState.startColorGreen);
+        sliderForFloat("B", 0, 1, screenAndUIState.startColorBlue);
+
+        advanceLayoutRow();
+        sliderForFloat("E", -1, 1, screenAndUIState.endThreshold);
+        sliderForFloat("R", 0, 1, screenAndUIState.endColorRed);
+        sliderForFloat("G", 0, 1, screenAndUIState.endColorGreen);
+        sliderForFloat("B", 0, 1, screenAndUIState.endColorBlue);
 
         // Left drag.
         if(hasLeftDragEvent && !hasHandledLeftDragEvent)
@@ -685,6 +802,8 @@ public:
 
     bool hasLeftDragEvent = false;
     bool hasHandledLeftDragEvent = false;
+    int leftDragStartX = 0;
+    int leftDragStartY = 0;
     int leftDragDeltaX = 0;
     int leftDragDeltaY = 0;
 };

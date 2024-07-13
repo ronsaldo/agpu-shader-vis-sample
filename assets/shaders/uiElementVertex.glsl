@@ -3,9 +3,17 @@
 layout(std140, set = 1, binding = 0) uniform ScreenAndUIStateBlock
 {
     uvec2 screenSize;
+
     bool flipVertically;
     float screenScale;
+
     vec2 screenOffset;
+
+    vec2 reserved;
+
+    vec4 voronoiFactors;
+    vec4 startColor;
+    vec4 endColor;
 } ScreenAndUIState;
 
 struct UIElementQuad
